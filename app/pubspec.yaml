@@ -1,0 +1,20 @@
+name: jarvis_app
+description: Jarvis desktop shell — chat/voice UI talking to the local Python backend.
+publish_to: "none"
+version: 0.1.0
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  web_socket_channel: ^3.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
