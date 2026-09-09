@@ -8,6 +8,9 @@ venv/
 dist/
 build/
 
+# Downloaded speech models (kokoro onnx + voices, multi-hundred-MB)
+backend/.models/
+
 # Flutter / Dart
 .dart_tool/
 .flutter-plugins*

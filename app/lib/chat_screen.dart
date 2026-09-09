@@ -27,6 +27,8 @@ class _ChatScreenState extends State<ChatScreen> {
   final List<ChatMessage> _messages = [];
   bool _connected = false;
   bool _assistantTyping = false;
+  bool _speaking = false;
+  String _pttState = 'idle'; // idle | recording | transcribing
 
   @override
   void initState() {
@@ -77,17 +79,50 @@ class _ChatScreenState extends State<ChatScreen> {
           _messages.last.text += (map['text'] ?? '') as String;
         });
       case 'done':
-        setState(() => _assistantTyping = false);
+        setState(() {
+          _assistantTyping = false;
+          _speaking = false;
+          _pttState = 'idle';
+        });
       case 'reset_done':
-        setState(() => _messages.clear());
+        setState(() {
+          _messages.clear();
+          _pttState = 'idle';
+        });
+      case 'transcript':
+        setState(() {
+          _messages.add(
+              ChatMessage(role: 'user', text: (map['text'] ?? '') as String));
+          _assistantTyping = true;
+        });
+      case 'ptt_state':
+        final st = (map['state'] ?? 'idle') as String;
+        setState(() {
+          _pttState = st;
+          if (st == 'transcribing') _assistantTyping = true;
+          if (st == 'recording') _assistantTyping = false;
+        });
+      case 'tts_start':
+        setState(() => _speaking = true);
+      case 'tts_done':
+        setState(() => _speaking = false);
+      case 'error':
+        _showError((map['message'] ?? 'error') as String);
       default:
         break;
     }
   }
 
+  void _showError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
   void _send() {
     final text = _input.text.trim();
-    if (text.isEmpty || !_connected) return;
+    if (text.isEmpty || !_connected || _assistantTyping) return;
     setState(() {
       _messages.add(ChatMessage(role: 'user', text: text));
       _assistantTyping = true;
@@ -96,12 +131,27 @@ class _ChatScreenState extends State<ChatScreen> {
     _channel!.sink.add(jsonEncode({'type': 'user_message', 'text': text}));
   }
 
+  void _sendPtt(String type) {
+    if (!_connected) return;
+    _channel!.sink.add(jsonEncode({'type': type}));
+    if (type == 'ptt_start') {
+      setState(() => _pttState = 'recording');
+    }
+  }
+
   void _reset() {
     if (_connected) {
       _channel!.sink.add(jsonEncode({'type': 'reset'}));
     } else {
       setState(_messages.clear);
     }
+  }
+
+  String? get _statusLine {
+    if (_pttState == 'recording') return 'Listening… release when done';
+    if (_pttState == 'transcribing') return 'Transcribing…';
+    if (_speaking) return 'Speaking…';
+    return null;
   }
 
   @override
@@ -115,6 +165,8 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final statusLine = _statusLine;
+    final busy = _assistantTyping || _speaking;
     return Scaffold(
       appBar: AppBar(
         title: Row(children: [
@@ -138,10 +190,27 @@ class _ChatScreenState extends State<ChatScreen> {
         ],
       ),
       body: Column(children: [
+        if (statusLine != null)
+          Container(
+            width: double.infinity,
+            color: _pttState == 'recording'
+                ? theme.colorScheme.errorContainer
+                : theme.colorScheme.tertiaryContainer,
+            padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+            child: Row(children: [
+              const SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 10),
+              Text(statusLine, style: theme.textTheme.bodyMedium),
+            ]),
+          ),
         Expanded(
           child: _messages.isEmpty
               ? Center(
-                  child: Text('Phase 0: text chat via local LLM',
+                  child: Text('Phase 1: type or hold 🎤 to talk',
                       style: theme.textTheme.bodySmall))
               : ListView.builder(
                   padding: const EdgeInsets.all(12),
@@ -174,13 +243,25 @@ class _ChatScreenState extends State<ChatScreen> {
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
             child: Row(children: [
+              _MicButton(
+                recording: _pttState == 'recording',
+                enabled: _connected && !busy,
+                onDown: () => _sendPtt('ptt_start'),
+                onUp: () => _sendPtt('ptt_stop'),
+                onCancel: () => _sendPtt('ptt_stop'),
+              ),
+              const SizedBox(width: 8),
               Expanded(
                 child: TextField(
                   controller: _input,
-                  enabled: _connected,
+                  enabled: _connected && !_pttState.startsWith('r'),
                   decoration: InputDecoration(
                     hintText: _connected
-                        ? (_assistantTyping ? 'Jarvis is thinking…' : 'Type a message')
+                        ? (busy
+                            ? (_speaking
+                                ? 'Jarvis is speaking…'
+                                : 'Jarvis is thinking…')
+                            : 'Type a message or hold 🎤')
                         : 'Backend offline — start it and reconnect',
                     border: const OutlineInputBorder(),
                     isDense: true,
@@ -191,7 +272,7 @@ class _ChatScreenState extends State<ChatScreen> {
               const SizedBox(width: 8),
               IconButton.filled(
                 icon: const Icon(Icons.send),
-                onPressed: _connected ? _send : null,
+                onPressed: (_connected && !busy) ? _send : null,
               ),
             ]),
           ),
@@ -200,3 +281,47 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 }
+
+/// Circular hold-to-talk button. Holds fire ptt_start; release fires ptt_stop.
+class _MicButton extends StatelessWidget {
+  const _MicButton({
+    required this.recording,
+    required this.enabled,
+    required this.onDown,
+    required this.onUp,
+    required this.onCancel,
+  });
+
+  final bool recording;
+  final bool enabled;
+  final VoidCallback onDown;
+  final VoidCallback onUp;
+  final VoidCallback onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = enabled
+        ? (recording ? Colors.redAccent : theme.colorScheme.secondaryContainer)
+        : theme.colorScheme.surfaceContainerHighest;
+    return Material(
+      color: color,
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTapDown: enabled ? (_) => onDown() : null,
+        onTapUp: enabled ? (_) => onUp() : null,
+        onTapCancel: enabled ? onCancel : null,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Icon(
+            recording ? Icons.stop_circle : Icons.mic,
+            color: enabled
+                ? (recording ? Colors.white : theme.colorScheme.onSecondaryContainer)
+                : theme.disabledColor,
+          ),
+        ),
+      ),
+    );
+  }
+}

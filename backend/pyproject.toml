@@ -10,6 +10,12 @@ dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "websockets>=13",
+    # Phase 1 speech: STT (faster-whisper), TTS (Kokoro via onnxruntime), audio
+    "faster-whisper>=1.1",
+    "sounddevice>=0.5",
+    "soundfile>=0.13",
+    "numpy>=2.0",
+    "kokoro-onnx>=0.4.7",
 ]
 
 # Classic pip extra so `pip install -e ".[dev]"` (as documented in the README)
