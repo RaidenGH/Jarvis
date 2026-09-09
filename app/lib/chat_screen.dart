@@ -65,15 +65,16 @@ class _ChatScreenState extends State<ChatScreen> {
       return; // ignore malformed frames
     }
     if (decoded is! Map<String, dynamic>) return;
+    final map = decoded; // promote once; closures don't see the is!-promotion
 
-    switch (decoded['type']) {
+    switch (map['type']) {
       case 'token':
         setState(() {
           if (!_assistantTyping) {
             _messages.add(ChatMessage(role: 'assistant', text: ''));
             _assistantTyping = true;
           }
-          _messages.last.text += (decoded['text'] ?? '') as String;
+          _messages.last.text += (map['text'] ?? '') as String;
         });
       case 'done':
         setState(() => _assistantTyping = false);
