@@ -44,6 +44,24 @@ class Settings(BaseSettings):
     tts_speed: float = 1.0
     tts_model_dir: str = ".models"  # where kokoro-v1.0.onnx + voices-v1.0.bin live
 
+    # --- wake word / always-listening (Phase 2) ---
+    # openWakeWord pretrained model name (e.g. `hey_jarvis`, `alexa`). Weights are
+    # fetched into the package's resources dir on first use (a few MB).
+    wake_enabled: bool = True
+    wake_word: str = "hey_jarvis"
+    wake_threshold: float = 0.5  # score in [0, 1]; openWakeWord's suggested default
+    # openWakeWord's bundled Silero VAD gates wake detections (0 disables it).
+    wake_vad_threshold: float = 0.5
+    wake_frame_ms: int = 80  # openWakeWord's native frame: 1280 samples @ 16 kHz
+    # After a wake hit, keep capturing until this much trailing silence.
+    wake_silence_seconds: float = 0.8
+    wake_max_seconds: float = 15.0  # cap a single spoken turn
+    wake_min_speech_seconds: float = 0.2  # ignore wake hit if nothing follows
+    # Endpointing VAD for the captured utterance: "energy" (no extra deps) or
+    # "silero" (openWakeWord's bundled Silero VAD).
+    vad_engine: str = "energy"
+    vad_energy_threshold: float = 0.012  # RMS on float32 audio in [-1, 1]
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -29,6 +29,8 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _assistantTyping = false;
   bool _speaking = false;
   String _pttState = 'idle'; // idle | recording | transcribing
+  bool _listening = false; // always-listening (wake word) armed
+  String _wakeWord = 'hey jarvis';
 
   @override
   void initState() {
@@ -102,6 +104,18 @@ class _ChatScreenState extends State<ChatScreen> {
           if (st == 'transcribing') _assistantTyping = true;
           if (st == 'recording') _assistantTyping = false;
         });
+      case 'listen_state':
+        final st = (map['state'] ?? 'idle') as String;
+        setState(() {
+          _listening = st != 'idle';
+          if (st == 'capturing') _assistantTyping = true;
+        });
+      case 'wake_detected':
+        setState(() {
+          final name = ((map['name'] ?? '') as String).replaceAll('_', ' ');
+          if (name.isNotEmpty) _wakeWord = name;
+          _assistantTyping = true;
+        });
       case 'tts_start':
         setState(() => _speaking = true);
       case 'tts_done':
@@ -147,10 +161,21 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  void _toggleListening() {
+    if (!_connected) return;
+    if (_listening) {
+      _channel!.sink.add(jsonEncode({'type': 'listen_stop'}));
+    } else {
+      if (_assistantTyping || _speaking) return;
+      _channel!.sink.add(jsonEncode({'type': 'listen_start'}));
+    }
+  }
+
   String? get _statusLine {
     if (_pttState == 'recording') return 'Listening… release when done';
     if (_pttState == 'transcribing') return 'Transcribing…';
     if (_speaking) return 'Speaking…';
+    if (_listening) return 'Listening for "$_wakeWord"…';
     return null;
   }
 
@@ -176,6 +201,12 @@ class _ChatScreenState extends State<ChatScreen> {
           const Text('Jarvis'),
         ]),
         actions: [
+          IconButton(
+              icon: Icon(_listening ? Icons.hearing : Icons.hearing_disabled),
+              tooltip: _listening
+                  ? 'Stop always-listening'
+                  : 'Always listen for the wake word',
+              onPressed: _connected ? _toggleListening : null),
           IconButton(
               icon: const Icon(Icons.refresh),
               tooltip: 'New session',
@@ -210,7 +241,8 @@ class _ChatScreenState extends State<ChatScreen> {
         Expanded(
           child: _messages.isEmpty
               ? Center(
-                  child: Text('Phase 1: type or hold 🎤 to talk',
+                  child: Text(
+                      'Type, hold 🎤 to talk, or tap the ear to wake me',
                       style: theme.textTheme.bodySmall))
               : ListView.builder(
                   padding: const EdgeInsets.all(12),
@@ -261,7 +293,9 @@ class _ChatScreenState extends State<ChatScreen> {
                             ? (_speaking
                                 ? 'Jarvis is speaking…'
                                 : 'Jarvis is thinking…')
-                            : 'Type a message or hold 🎤')
+                            : (_listening
+                                ? 'Listening for "$_wakeWord"…'
+                                : 'Type a message or hold 🎤'))
                         : 'Backend offline — start it and reconnect',
                     border: const OutlineInputBorder(),
                     isDense: true,

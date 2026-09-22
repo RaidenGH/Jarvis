@@ -12,8 +12,11 @@ import numpy as np
 
 from ..config import Settings
 from .audio import MicRecorder, SpeakerPlayer
+from .listener import WakeListener
 from .stt import STTEngine
 from .tts import TTSEngine
+from .vad import build_vad
+from .wake import WakeWordEngine
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,9 @@ class SpeechService:
         tts: TTSEngine | None = None,
         recorder: MicRecorder | None = None,
         player: SpeakerPlayer | None = None,
+        wake: WakeWordEngine | None = None,
+        vad=None,
+        listener: WakeListener | None = None,
     ):
         self.settings = settings
         # Lazy defaults: engines constructed on first use so backend startup
@@ -34,6 +40,12 @@ class SpeechService:
         self._tts = tts
         self._recorder = recorder
         self._player = player
+        self._wake = wake
+        self._vad = vad
+        self._listener = listener
+        # Always-listening plumbing, live only between start/stop_listening.
+        self._event_queue: asyncio.Queue | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     # --- components (lazily built) ---
     @property
@@ -71,6 +83,81 @@ class SpeechService:
         if self._player is None:
             self._player = SpeakerPlayer()
         return self._player
+
+    @property
+    def wake(self) -> WakeWordEngine:
+        if self._wake is None:
+            self._wake = WakeWordEngine(
+                model=self.settings.wake_word,
+                threshold=self.settings.wake_threshold,
+                vad_threshold=self.settings.wake_vad_threshold,
+            )
+        return self._wake
+
+    @property
+    def vad(self):
+        if self._vad is None:
+            self._vad = build_vad(
+                self.settings.vad_engine,
+                energy_threshold=self.settings.vad_energy_threshold,
+            )
+        return self._vad
+
+    @property
+    def listener(self) -> WakeListener:
+        if self._listener is None:
+            self._listener = WakeListener(
+                self.wake,
+                self.vad,
+                sample_rate=self.settings.stt_sample_rate,
+                frame_ms=self.settings.wake_frame_ms,
+                silence_seconds=self.settings.wake_silence_seconds,
+                max_seconds=self.settings.wake_max_seconds,
+                min_speech_seconds=self.settings.wake_min_speech_seconds,
+                on_event=self._emit_event,
+                on_utterance=self._emit_utterance,
+            )
+        return self._listener
+
+    # --- always-listening (Phase 2) ---
+    @property
+    def is_listening(self) -> bool:
+        return self._event_queue is not None
+
+    def start_listening(self) -> asyncio.Queue | None:
+        """Begin wake-word listening. Returns an event queue, or None if the
+        mic could not be opened (or listening is already active)."""
+        if self.is_listening:
+            return None
+        queue: asyncio.Queue = asyncio.Queue()
+        self._event_queue = queue
+        self._loop = asyncio.get_running_loop()
+        if not self.listener.start():
+            self._event_queue = None
+            self._loop = None
+            return None
+        return queue
+
+    def stop_listening(self) -> None:
+        if self._listener is not None:
+            self._listener.stop()
+        self._event_queue = None
+        self._loop = None
+
+    def resume_listening(self) -> None:
+        """Re-arm after a spoken turn has been answered and played."""
+        if self._listener is not None:
+            self._listener.resume()
+
+    def _emit_event(self, event: dict) -> None:
+        # Called from the listener thread; hop back onto the event loop.
+        queue, loop = self._event_queue, self._loop
+        if queue is None or loop is None:
+            return
+        loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    def _emit_utterance(self, audio: np.ndarray) -> None:
+        self._emit_event({"type": "utterance", "audio": audio})
 
     # --- push-to-talk flow (run from the WS handler) ---
     def start_recording(self) -> bool:
