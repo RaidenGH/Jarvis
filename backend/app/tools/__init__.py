@@ -7,11 +7,19 @@ consume in Phase 4).
 
 import json
 
+from .apps import OPEN_APP
 from .base import Tool, policy_for
-from .files import READ_FILE
+from .files import READ_FILE, SEARCH_FILES
 from .system import SYSTEM_STATS
+from .volume import CHANGE_VOLUME
 
-TOOLS: list[Tool] = [SYSTEM_STATS, READ_FILE]
+TOOLS: list[Tool] = [
+    SYSTEM_STATS,
+    READ_FILE,
+    SEARCH_FILES,
+    OPEN_APP,
+    CHANGE_VOLUME,
+]
 _BY_NAME: dict[str, Tool] = {t.name: t for t in TOOLS}
 
 

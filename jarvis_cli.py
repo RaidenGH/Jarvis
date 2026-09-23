@@ -9,7 +9,7 @@ Run (backend must already be running):
 
     backend/.venv/Scripts/python jarvis_cli.py
 
-Commands inside the chat:  /help  /tools  /reset  /quit
+Commands inside the chat:  /help  /tools  /audit  /reset  /quit
 History persists on the backend side (JARVIS_HISTORY_PATH), so restarting
 the CLI or the backend keeps the conversation.
 """
@@ -45,6 +45,7 @@ RED = "\x1b[31m"
 HELP = """\
 Type a message and press enter. Commands:
   /tools   list the tools the brain may call, with their risk tiers
+  /audit   show recent tool calls from the audit log
   /reset   clear this conversation's history
   /help    show this help
   /quit    exit (Ctrl+C also works)
@@ -78,6 +79,30 @@ def fetch_health(ws_url: str) -> dict | None:
             return json.loads(resp.read())
     except Exception:  # noqa: BLE001 - health is a nice-to-have
         return None
+
+
+def fetch_audit(ws_url: str, limit: int = 10) -> list[dict]:
+    """GET /audit next to the WS endpoint (stdlib only)."""
+    parts = ws_url.split("/ws/")[0].replace("ws://", "http://", 1)
+    try:
+        with urllib.request.urlopen(f"{parts}/audit?limit={limit}", timeout=3) as resp:
+            return json.loads(resp.read()).get("entries", [])
+    except Exception:  # noqa: BLE001 - the log is a nice-to-have
+        return []
+
+
+def print_audit(entries: list[dict]) -> None:
+    if not entries:
+        print(color("  nothing recorded yet", DIM))
+        return
+    for entry in entries:
+        decision = entry.get("decision", "?")
+        args = json.dumps(entry.get("arguments") or {}, ensure_ascii=False)
+        line = (
+            f"  {entry.get('ts')}  {entry.get('tool')}({args})"
+            f"  [{entry.get('risk')}]  {decision}"
+        )
+        print(color(line, RED if decision in ("declined", "disabled") else DIM))
 
 
 def print_tool_call(event: dict) -> None:
@@ -203,6 +228,10 @@ async def repl(ws_url: str, new: bool) -> None:
                     print(color(f"  {name:<14} {risks.get(name, '?')}", DIM))
                 if not listed:
                     print(color("  none", DIM))
+                continue
+            if text == "/audit":
+                entries = await asyncio.to_thread(fetch_audit, ws_url)
+                print_audit(entries)
                 continue
             if text == "/reset":
                 await ws.send(json.dumps({"type": "reset"}))

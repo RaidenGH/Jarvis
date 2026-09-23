@@ -43,6 +43,15 @@ class Settings(BaseSettings):
     # turn (and the mic) forever.
     confirm_timeout_seconds: float = 120.0
 
+    # Extra apps `open_app` may launch, as comma-separated `name=target` pairs
+    # (e.g. "steam=steam,code=code"). Added to a built-in list; nothing off
+    # the list can be opened.
+    app_allowlist: str = ""
+
+    # --- audit (Phase 3: append-only record of every tool call) ---
+    # One JSON object per line. Empty string disables logging (tests use this).
+    audit_path: str = ".jarvis_audit.jsonl"
+
     # --- speech (Phase 1: push-to-talk voice loop) ---
     # STT via faster-whisper. `device` may be "auto" (tries CUDA, falls back to
     # CPU), "cuda" (needs cuDNN/cuBLAS DLLs next to ctranslate2 on Windows),

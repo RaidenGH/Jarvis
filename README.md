@@ -6,19 +6,25 @@ Local Jarvis that can work offline and help you on your devices.
 always-listening mode: tap the ear, say "Hey Jarvis", and speak without
 touching anything. Offline STT via faster-whisper, offline TTS via Kokoro-82M,
 wake word + VAD via openWakeWord, brain via local Ollama — with a working
-**tool-calling agent loop**, a terminal front-end (`jarvis_cli.py`), and the
-first piece of the **permission layer**: every tool carries a risk tier and
-anything above read-only has to be approved by you before it runs. See
-`docs/PLAN.md` for the full roadmap.
+**tool-calling agent loop** with real device tools, a terminal front-end
+(`jarvis_cli.py`), and the **permission layer**: every tool carries a risk tier,
+anything above read-only has to be approved by you before it runs, and every
+call is written to an append-only audit log. See `docs/PLAN.md` for the full
+roadmap.
 
 ```
-app/       Flutter Windows shell (chat UI, talks to backend over WebSocket)
+app/       Flutter Windows shell: chat UI with inline tool activity and the
+           approval dialog, talking to the backend over WebSocket.
+           app/lib/transcript.dart holds the frame-to-view-model rules, unit
+           tested without a socket; `cd app && flutter test`
 jarvis_cli.py   Terminal front-end to the same agent loop (Phase 2.5)
 backend/   FastAPI service (session memory + LLM + speech pipeline)
 backend/app/agent.py   agent loop: LLM → decide → call tool → respond
-backend/app/tools/     allow-listed tools, each tagged with a risk tier
-                      (system_stats, read_file — both read-only, so both run
-                      without prompting; base.py holds the tier→policy table)
+backend/app/tools/     allow-listed tools, each tagged with a risk tier.
+                      Read-only: system_stats, read_file, search_files.
+                      Confirm-first: open_app, change_volume. base.py holds
+                      the tier→policy table
+backend/app/audit.py   append-only JSONL record of every tool call
 backend/app/speech/   STT (faster-whisper), TTS (Kokoro-onnx), mic (sounddevice),
                       wake word (openWakeWord), VAD endpointing
 docs/      Development plan
@@ -73,8 +79,9 @@ With the backend running, open a third terminal:
 backend/.venv/Scripts/python jarvis_cli.py     # needs websockets, which the venv has
 ```
 
-Ask e.g. "what are my system stats?" or "read app/lib/main.dart" and you'll
-see the tool call (`⚙ system_stats({})`), its result, then the answer.
+Ask e.g. "what are my system stats?", "read app/lib/main.dart", "find the test
+files", or "open notepad" and you'll see the tool call (`⚙ system_stats({})`),
+its result, then the answer.
 If you ask for something above the read-only tier, the CLI stops mid-turn and
 asks you to approve it (`⚠ set_volume({...})`) — `y/N` for the one-tap tiers,
 or an exact retype of the challenge phrase for destructive ones. Answer no and
@@ -119,10 +126,15 @@ flutter pub get
 | `JARVIS_HISTORY_PATH` | `.jarvis_history.json` | Where sessions persist between runs (empty disables) |
 | `JARVIS_TOOL_ROOT` | repo root | Sandbox root for `read_file` — nothing outside is reachable |
 | `JARVIS_CONFIRM_TIMEOUT_SECONDS` | `120` | How long to wait for an approval before treating it as a refusal |
+| `JARVIS_APP_ALLOWLIST` | *(empty)* | Extra apps `open_app` may launch, as `name=target` pairs |
+| `JARVIS_AUDIT_PATH` | `.jarvis_audit.jsonl` | Where tool calls are logged (empty disables) |
 
 ## API surface
 
-- `GET /health` — liveness + configured provider/model + tool list
+- `GET /health` — liveness + configured provider/model + tools and their
+  risk tiers + where the audit log lives
+- `GET /audit?limit=20` — the most recent tool calls, oldest first, including
+  the ones that were declined or are disabled
 - `POST /chat` `{text, session_id}` → one-shot reply (easy curl testing)
 - `WS /ws/{session_id}` — send `{"type":"user_message","text":"..."}`, receive
   `{"type":"token","text":...}` frames then `{"type":"done"}`;

@@ -1,7 +1,8 @@
 """Jarvis backend entrypoint (chat + push-to-talk + always-listening voice).
 
 Endpoints:
-    GET  /health            liveness + configured provider/model
+    GET  /health            liveness + configured provider/model + tool risks
+    GET  /audit             recent tool calls from the audit log
     POST /chat              one-shot REST chat (easy to curl)
     WS   /ws/{session_id}   streaming chat + push-to-talk + wake-word voice
 
@@ -21,6 +22,7 @@ from pydantic import BaseModel
 from starlette.middleware.cors import CORSMiddleware
 
 from .agent import ConfirmationDecision, run_turn
+from .audit import AuditLog
 from .config import Settings, get_settings
 from .llm import LLMClient, build_client
 from .session import SessionStore
@@ -34,9 +36,15 @@ class State:
     sessions: SessionStore = field(default_factory=SessionStore)
     llm: LLMClient | None = None
     speech: SpeechService | None = None
+    audit: AuditLog | None = None
 
 
 state = State()
+
+
+def _brain_label() -> str:
+    """Which reasoning path handled a turn, as recorded in the audit log."""
+    return f"{state.settings.llm_provider}:{state.settings.llm_model}"
 
 
 @asynccontextmanager
@@ -48,6 +56,7 @@ async def lifespan(app: FastAPI):
     )
     state.llm = build_client(state.settings)  # fails fast on bad config
     state.speech = SpeechService(state.settings)  # cheap: engines are lazy
+    state.audit = AuditLog(state.settings.audit_path or None)
     yield
 
 
@@ -86,7 +95,15 @@ async def health() -> dict:
         "wake_word": s.wake_word,
         "tools": tool_names(),
         "tool_risks": tool_risks(),
+        "audit_path": str(state.audit.path) if state.audit and state.audit.path else None,
     }
+
+
+@app.get("/audit")
+async def audit_tail(limit: int = 20) -> dict:
+    """Recent tool calls, oldest first — what ran, and what didn't."""
+    entries = state.audit.tail(limit) if state.audit else []
+    return {"entries": entries, "enabled": bool(state.audit and state.audit.enabled)}
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -101,7 +118,14 @@ async def chat(req: ChatRequest) -> ChatResponse:
     assert state.llm is not None  # set by lifespan
     parts: list[str] = []
     try:
-        async for event in run_turn(state.llm, state.sessions, req.session_id, req.text):
+        async for event in run_turn(
+            state.llm,
+            state.sessions,
+            req.session_id,
+            req.text,
+            audit=state.audit,
+            brain=_brain_label(),
+        ):
             if event["type"] == "token":
                 parts.append(event["text"])
     except RuntimeError as exc:
@@ -203,6 +227,8 @@ async def ws_chat(ws: WebSocket, session_id: str) -> None:
                     session_id,
                     text,
                     confirm=_ask,
+                    audit=state.audit,
+                    brain=_brain_label(),
                 ):
                     events.put_nowait(event)
             except RuntimeError as exc:

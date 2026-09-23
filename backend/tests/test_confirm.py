@@ -4,9 +4,8 @@ The gate is exercised with fake tools registered at each tier, so nothing here
 depends on a device-control tool existing yet.
 """
 
-import contextlib
-
 import pytest
+from conftest import make_tool as _tool, registered
 from fastapi.testclient import TestClient
 
 from app.agent import ConfirmationDecision, run_turn
@@ -14,7 +13,6 @@ from app.config import Settings
 from app.llm.base import LLMClient, LLMReply, ToolCall
 from app.main import app, state
 from app.session import SessionStore
-from app.tools import TOOLS, Tool, _BY_NAME
 from app.tools.base import (
     DESTRUCTIVE,
     EXTERNAL_FACING,
@@ -22,34 +20,6 @@ from app.tools.base import (
     REVERSIBLE_WRITE,
     policy_for,
 )
-
-
-def _tool(name: str, risk: str, ran: list | None = None) -> Tool:
-    def handler(_args: dict) -> dict:
-        if ran is not None:
-            ran.append(name)
-        return {"ran": name}
-
-    return Tool(
-        name=name,
-        description=f"test tool {name}",
-        parameters={"type": "object", "properties": {}, "required": []},
-        handler=handler,
-        risk=risk,
-    )
-
-
-@contextlib.contextmanager
-def registered(tool: Tool):
-    """Temporarily add a tool to the allow-list the way a real one is added."""
-    TOOLS.append(tool)
-    _BY_NAME[tool.name] = tool
-    try:
-        yield tool
-    finally:
-        TOOLS.remove(tool)
-        _BY_NAME.pop(tool.name, None)
-
 
 class OneToolLLM(LLMClient):
     """Asks for `name` on the first round, then answers."""

@@ -24,6 +24,7 @@ import json
 from dataclasses import dataclass
 from typing import AsyncIterator, Awaitable, Callable
 
+from .audit import AuditLog
 from .llm.base import LLMClient, LLMReply, ToolCall
 from .session import SYSTEM_PROMPT, Message, SessionStore
 from .tools import Tool, execute_tool, get_tool, policy_for, tool_specs
@@ -92,20 +93,48 @@ def _tool_message(call: ToolCall, result: dict) -> Message:
     }
 
 
+def _audit(
+    audit: AuditLog | None,
+    brain: str,
+    session_id: str,
+    call: ToolCall,
+    *,
+    decision: str,
+    risk: str,
+    result: dict,
+) -> None:
+    """Record one tool call's outcome: what was asked, by which brain, and
+    whether it ran (plan §2.5's audit log)."""
+    if audit is None:
+        return
+    audit.record(
+        session_id=session_id,
+        brain=brain,
+        tool=call.name,
+        arguments=call.arguments,
+        risk=risk,
+        decision=decision,
+        result=result,
+    )
+
+
 async def run_turn(
     llm: LLMClient,
     sessions: SessionStore,
     session_id: str,
     text: str,
     confirm: ConfirmFn | None = None,
+    audit: AuditLog | None = None,
+    brain: str = "",
 ) -> AsyncIterator[dict]:
     """Run one user turn, yielding WS frames: tool_call / tool_result / token.
 
     Gated tools also produce `confirm_request` (asks the human) and
-    `tool_denied` (the action did not run). Raises RuntimeError on provider
-    failure (same contract the old _stream_llm had). History is persisted only
-    when the turn completes, so a failed turn leaves no half-finished
-    assistant message behind.
+    `tool_denied` (the action did not run). Every call is written to `audit`,
+    including the ones that never ran. Raises RuntimeError on provider failure
+    (same contract the old _stream_llm had). History is persisted only when the
+    turn completes, so a failed turn leaves no half-finished assistant message
+    behind.
     """
     confirm = confirm or _decline_all
     sessions.add(session_id, "user", text)
@@ -135,8 +164,18 @@ async def run_turn(
                 "arguments": call.arguments,
             }
 
-            denial = await _gate(call, confirm)
+            tool = get_tool(call.name)
+            denial = await _gate(tool, call, confirm)
             if denial is not None:
+                _audit(
+                    audit,
+                    brain,
+                    session_id,
+                    call,
+                    decision=denial["decision"],
+                    risk=denial["risk"],
+                    result={"error": denial["reason"]},
+                )
                 yield {
                     "type": "tool_denied",
                     "id": call.id,
@@ -147,6 +186,15 @@ async def run_turn(
                 continue
 
             result = execute_tool(call.name, call.arguments)
+            _audit(
+                audit,
+                brain,
+                session_id,
+                call,
+                decision="ran",
+                risk=tool.risk if tool else "unknown",
+                result=result,
+            )
             yield {"type": "tool_result", "name": call.name, "result": result}
             messages.append(_tool_message(call, result))
 
@@ -154,7 +202,7 @@ async def run_turn(
     yield {"type": "token", "text": LIMIT_REACHED}
 
 
-async def _gate(call: ToolCall, confirm: ConfirmFn) -> dict | None:
+async def _gate(tool: Tool | None, call: ToolCall, confirm: ConfirmFn) -> dict | None:
     """Decide whether `call` may run.
 
     Returns None to let it through, or a `tool_denied` payload explaining why
@@ -162,13 +210,13 @@ async def _gate(call: ToolCall, confirm: ConfirmFn) -> dict | None:
     `execute_tool` already reports them as an error, which keeps the model's
     recovery path for a hallucinated name exactly as it was.
     """
-    tool = get_tool(call.name)
     if tool is None:
         return None
 
     policy = policy_for(tool.risk)
     if not policy.enabled:
         return {
+            "decision": "disabled",
             "risk": policy.tier,
             "reason": f"{call.name} is disabled: {policy.reason}",
         }
@@ -181,6 +229,7 @@ async def _gate(call: ToolCall, confirm: ConfirmFn) -> dict | None:
     if _approved(request, decision):
         return None
     return {
+        "decision": "declined",
         "risk": policy.tier,
         "mode": policy.confirmation,
         "reason": f"the user did not confirm {call.name}",

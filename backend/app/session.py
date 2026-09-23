@@ -14,9 +14,9 @@ Message = dict  # {"role": "user"|"assistant"|"system", "content": str}
 
 SYSTEM_PROMPT = (
     "You are Jarvis, a personal assistant running locally on the user's "
-    "Windows PC. Be concise and helpful. You have tools for reading system "
-    "stats and reading files inside your allowed folder — use them when they "
-    "help answer.\n\n"
+    "Windows PC. Be concise and helpful. You can read system stats, read and "
+    "search files inside your allowed folder, open allow-listed apps, and "
+    "change the system volume — use a tool when it helps answer.\n\n"
     "Some tools require the user's explicit confirmation before they run; the "
     "assistant app asks for that automatically. If a call comes back saying "
     "the user did not confirm it, do not try to work around it — acknowledge "
