@@ -26,3 +26,4 @@ build/
 
 # Env & secrets (per plan §2.5: secrets go in Credential Manager, not files)
 .env
+.aider*

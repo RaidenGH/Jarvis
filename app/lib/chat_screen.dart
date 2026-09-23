@@ -1,6 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:web_socket_channel/status.dart' as status;
+
+import 'config.dart';
 
 class ChatMessage {
   ChatMessage({required this.role, required this.text});
@@ -24,7 +29,10 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _assistantTyping = false;
   bool _speaking = false;
   String _pttState = 'idle'; // idle | recording | transcribing
+  bool _listening = false; // always-listening (wake word) armed
+  String _wakeWord = 'hey jarvis';
 
+  @override
   void initState() {
     super.initState();
     _input = TextEditingController();
@@ -41,6 +49,16 @@ class _ChatScreenState extends State<ChatScreen> {
     }).catchError((_) {
       if (mounted) setState(() => _connected = false);
     });
+    _sub = channel.stream.listen(
+      (data) => _handleEvent(data as String),
+      onError: (_) {
+        if (mounted) setState(() => _connected = false);
+      },
+      onDone: () {
+        if (mounted) setState(() => _connected = false);
+      },
+      cancelOnError: false,
+    );
   }
 
   void _handleEvent(String raw) {
@@ -53,11 +71,59 @@ class _ChatScreenState extends State<ChatScreen> {
     if (decoded is! Map<String, dynamic>) return;
     final map = decoded; // promote once; closures don't see the is!-promotion
 
-    // Change greeting to be more casual
-    if (map['type'] == 'greeting') {
-      ScaffoldMessenger.of(context)
-          ..hideCurrentSnackBar()
-          ..showSnackBar(SnackBar(content: Text('Hey there!')));
+    switch (map['type']) {
+      case 'token':
+        setState(() {
+          if (!_assistantTyping) {
+            _messages.add(ChatMessage(role: 'assistant', text: ''));
+            _assistantTyping = true;
+          }
+          _messages.last.text += (map['text'] ?? '') as String;
+        });
+      case 'done':
+        setState(() {
+          _assistantTyping = false;
+          _speaking = false;
+          _pttState = 'idle';
+        });
+      case 'reset_done':
+        setState(() {
+          _messages.clear();
+          _pttState = 'idle';
+        });
+      case 'transcript':
+        setState(() {
+          _messages.add(
+              ChatMessage(role: 'user', text: (map['text'] ?? '') as String));
+          _assistantTyping = true;
+        });
+      case 'ptt_state':
+        final st = (map['state'] ?? 'idle') as String;
+        setState(() {
+          _pttState = st;
+          if (st == 'transcribing') _assistantTyping = true;
+          if (st == 'recording') _assistantTyping = false;
+        });
+      case 'listen_state':
+        final st = (map['state'] ?? 'idle') as String;
+        setState(() {
+          _listening = st != 'idle';
+          if (st == 'capturing') _assistantTyping = true;
+        });
+      case 'wake_detected':
+        setState(() {
+          final name = ((map['name'] ?? '') as String).replaceAll('_', ' ');
+          if (name.isNotEmpty) _wakeWord = name;
+          _assistantTyping = true;
+        });
+      case 'tts_start':
+        setState(() => _speaking = true);
+      case 'tts_done':
+        setState(() => _speaking = false);
+      case 'error':
+        _showError((map['message'] ?? 'error') as String);
+      default:
+        break;
     }
   }
 
@@ -91,7 +157,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_connected) {
       _channel!.sink.add(jsonEncode({'type': 'reset'}));
     } else {
-      setState(() => _messages.clear);
+      setState(_messages.clear);
     }
   }
 
@@ -106,13 +172,14 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   String? get _statusLine {
-    if (_pttState == 'recording') return 'Recording… release when done';
+    if (_pttState == 'recording') return 'Listening… release when done';
     if (_pttState == 'transcribing') return 'Transcribing…';
     if (_speaking) return 'Speaking…';
     if (_listening) return 'Listening for "$_wakeWord"…';
     return null;
   }
 
+  @override
   void dispose() {
     _sub?.cancel();
     _channel?.sink.close(status.normalClosure);
@@ -120,6 +187,7 @@ class _ChatScreenState extends State<ChatScreen> {
     super.dispose();
   }
 
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final statusLine = _statusLine;
@@ -128,58 +196,128 @@ class _ChatScreenState extends State<ChatScreen> {
       appBar: AppBar(
         title: Row(children: [
           Icon(Icons.circle,
-              size: 12, color: _connected ? Colors.greenAccent : Colors.redAccent),
+              size: 12,
+              color: _connected ? Colors.greenAccent : Colors.redAccent),
           const SizedBox(width: 8),
-          Text(_connected ? 'Connected' : 'Disconnected'),
+          const Text('Jarvis'),
         ]),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _reset,
-          ),
+              icon: Icon(_listening ? Icons.hearing : Icons.hearing_disabled),
+              tooltip: _listening
+                  ? 'Stop always-listening'
+                  : 'Always listen for the wake word',
+              onPressed: _connected ? _toggleListening : null),
+          IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: 'New session',
+              onPressed: _reset),
+          IconButton(
+              icon: const Icon(Icons.link),
+              tooltip: 'Reconnect',
+              onPressed: () {
+                setState(_messages.clear);
+                _connect();
+              }),
         ],
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: ListView.builder(
-              reverse: true,
-              itemCount: _messages.length,
-              itemBuilder: (context, index) {
-                final message = _messages[index];
-                return ListTile(
-                  title: Text(message.text),
-                  subtitle: Text(message.role),
-                );
-              },
-            ),
+      body: Column(children: [
+        if (statusLine != null)
+          Container(
+            width: double.infinity,
+            color: _pttState == 'recording'
+                ? theme.colorScheme.errorContainer
+                : theme.colorScheme.tertiaryContainer,
+            padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+            child: Row(children: [
+              const SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 10),
+              Text(statusLine, style: theme.textTheme.bodyMedium),
+            ]),
           ),
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _input,
-                    decoration: InputDecoration(
-                      labelText: 'Type a message',
-                      border: OutlineInputBorder(),
-                    ),
+        Expanded(
+          child: _messages.isEmpty
+              ? Center(
+                  child: Text(
+                      'Type, hold 🎤 to talk, or tap the ear to wake me',
+                      style: theme.textTheme.bodySmall))
+              : ListView.builder(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: _messages.length,
+                  itemBuilder: (_, i) {
+                    final m = _messages[i];
+                    final isUser = m.role == 'user';
+                    return Align(
+                      alignment:
+                          isUser ? Alignment.centerRight : Alignment.centerLeft,
+                      child: Container(
+                        margin: const EdgeInsets.symmetric(vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 10),
+                        constraints: BoxConstraints(
+                            maxWidth: MediaQuery.of(context).size.width * 0.7),
+                        decoration: BoxDecoration(
+                          color: isUser
+                              ? theme.colorScheme.primaryContainer
+                              : theme.colorScheme.surfaceContainerHighest,
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: SelectableText(m.text),
+                      ),
+                    );
+                  },
+                ),
+        ),
+        SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+            child: Row(children: [
+              _MicButton(
+                recording: _pttState == 'recording',
+                enabled: _connected && !busy,
+                onDown: () => _sendPtt('ptt_start'),
+                onUp: () => _sendPtt('ptt_stop'),
+                onCancel: () => _sendPtt('ptt_stop'),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextField(
+                  controller: _input,
+                  enabled: _connected && !_pttState.startsWith('r'),
+                  decoration: InputDecoration(
+                    hintText: _connected
+                        ? (busy
+                            ? (_speaking
+                                ? 'Jarvis is speaking…'
+                                : 'Jarvis is thinking…')
+                            : (_listening
+                                ? 'Listening for "$_wakeWord"…'
+                                : 'Type a message or hold 🎤'))
+                        : 'Backend offline — start it and reconnect',
+                    border: const OutlineInputBorder(),
+                    isDense: true,
                   ),
+                  onSubmitted: (_) => _send(),
                 ),
-                IconButton(
-                  icon: const Icon(Icons.send),
-                  onPressed: _send,
-                ),
-              ],
-            ),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filled(
+                icon: const Icon(Icons.send),
+                onPressed: (_connected && !busy) ? _send : null,
+              ),
+            ]),
           ),
-        ],
-      ),
+        ),
+      ]),
     );
   }
 }
 
+/// Circular hold-to-talk button. Holds fire ptt_start; release fires ptt_stop.
 class _MicButton extends StatelessWidget {
   const _MicButton({
     required this.recording,
@@ -195,6 +333,7 @@ class _MicButton extends StatelessWidget {
   final VoidCallback onUp;
   final VoidCallback onCancel;
 
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final color = enabled
@@ -205,13 +344,19 @@ class _MicButton extends StatelessWidget {
       shape: const CircleBorder(),
       child: InkWell(
         customBorder: const CircleBorder(),
-        onTapDown: (details) => onDown(),
-        onTapUp: (details) => onUp(),
-        onTapCancel: () => onCancel(),
-        child: Icon(
-          Icons.mic,
-          color: Colors.white,
-          size: 24,
+        onTapDown: enabled ? (_) => onDown() : null,
+        onTapUp: enabled ? (_) => onUp() : null,
+        onTapCancel: enabled ? onCancel : null,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Icon(
+            recording ? Icons.stop_circle : Icons.mic,
+            color: enabled
+                ? (recording
+                    ? Colors.white
+                    : theme.colorScheme.onSecondaryContainer)
+                : theme.disabledColor,
+          ),
         ),
       ),
     );
