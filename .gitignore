@@ -11,6 +11,9 @@ build/
 # Downloaded speech models (kokoro onnx + voices, multi-hundred-MB)
 backend/.models/
 
+# Session history persisted between runs (Phase 2.5)
+.jarvis_history.json
+
 # Flutter / Dart
 .dart_tool/
 .flutter-plugins*

@@ -2,15 +2,19 @@
 
 Local Jarvis that can work offline and help you on your devices.
 
-**Status: Phase 2** — text chat, a push-to-talk voice loop, and an
+**Status: Phase 2.5** — text chat, a push-to-talk voice loop, and an
 always-listening mode: tap the ear, say "Hey Jarvis", and speak without
 touching anything. Offline STT via faster-whisper, offline TTS via Kokoro-82M,
-wake word + VAD via openWakeWord, brain via local Ollama. See `docs/PLAN.md`
-for the full roadmap.
+wake word + VAD via openWakeWord, brain via local Ollama — now with a working
+**tool-calling agent loop** (read-only tools) and a terminal front-end,
+`jarvis_cli.py`. See `docs/PLAN.md` for the full roadmap.
 
 ```
 app/       Flutter Windows shell (chat UI, talks to backend over WebSocket)
+jarvis_cli.py   Terminal front-end to the same agent loop (Phase 2.5)
 backend/   FastAPI service (session memory + LLM + speech pipeline)
+backend/app/agent.py   agent loop: LLM → decide → call tool → respond
+backend/app/tools/     allow-listed tools (system_stats, read_file — sandboxed)
 backend/app/speech/   STT (faster-whisper), TTS (Kokoro-onnx), mic (sounddevice),
                       wake word (openWakeWord), VAD endpointing
 docs/      Development plan
@@ -57,6 +61,21 @@ Type a message, or hold 🎤 and speak — Jarvis replies in text and, for voice
 aloud through your speakers. Or tap the ear icon to always-listen and just say
 "Hey Jarvis".
 
+### CLI (Phase 2.5) — watch the brain call tools
+
+With the backend running, open a third terminal:
+
+```bash
+backend/.venv/Scripts/python jarvis_cli.py     # needs websockets, which the venv has
+```
+
+Ask e.g. "what are my system stats?" or "read app/lib/main.dart" and you'll
+see the tool call (`⚙ system_stats({})`), its result, then the answer.
+Commands inside the chat: `/tools`, `/reset`, `/quit`. `--new` clears the
+session's history on startup. Conversation history is persisted by the
+backend to `.jarvis_history.json`, so both CLI and Flutter chats survive a
+backend restart (`JARVIS_HISTORY_PATH=` disables it).
+
 ### First-time setup (only if `.venv` / `windows/` are missing)
 
 ```bash
@@ -87,14 +106,20 @@ flutter pub get
 | `JARVIS_WAKE_VAD_THRESHOLD` | `0.5` | Silero VAD gate on detections (0 disables) |
 | `JARVIS_WAKE_SILENCE_SECONDS` | `0.8` | Trailing silence that ends a spoken turn |
 | `JARVIS_VAD_ENGINE` | `energy` | Endpointing VAD: `energy` or `silero` |
+| `JARVIS_HISTORY_PATH` | `.jarvis_history.json` | Where sessions persist between runs (empty disables) |
+| `JARVIS_TOOL_ROOT` | repo root | Sandbox root for `read_file` — nothing outside is reachable |
 
 ## API surface
 
-- `GET /health` — liveness + configured provider/model
+- `GET /health` — liveness + configured provider/model + tool list
 - `POST /chat` `{text, session_id}` → one-shot reply (easy curl testing)
 - `WS /ws/{session_id}` — send `{"type":"user_message","text":"..."}`, receive
   `{"type":"token","text":...}` frames then `{"type":"done"}`;
   send `{"type":"reset"}` to clear the session
+- **Agent loop:** every text turn may call allow-listed tools; before the
+  answer the backend interleaves `{"type":"tool_call","name","arguments"}` and
+  `{"type":"tool_result","name","result"}` frames (clients that don't know
+  them just ignore them)
 - **Push-to-talk:** send `{"type":"ptt_start"}`, then `{"type":"ptt_stop"}`.
   The backend records the mic, streams `{"type":"transcript","text":...}`,
   replies via the normal token stream, then plays the spoken reply

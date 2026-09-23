@@ -15,10 +15,12 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from starlette.middleware.cors import CORSMiddleware
 
+from .agent import run_turn
 from .config import Settings, get_settings
 from .llm import LLMClient, build_client
-from .session import SYSTEM_PROMPT, SessionStore
+from .session import SessionStore
 from .speech import SpeechService
+from .tools import tool_names
 
 
 @dataclass
@@ -35,7 +37,10 @@ state = State()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     state.settings = get_settings()
-    state.sessions = SessionStore(max_messages=state.settings.max_history_messages)
+    state.sessions = SessionStore(
+        max_messages=state.settings.max_history_messages,
+        path=state.settings.history_path or None,
+    )
     state.llm = build_client(state.settings)  # fails fast on bad config
     state.speech = SpeechService(state.settings)  # cheap: engines are lazy
     yield
@@ -74,38 +79,25 @@ async def health() -> dict:
         "ptt": True,
         "wake_enabled": s.wake_enabled,
         "wake_word": s.wake_word,
+        "tools": tool_names(),
     }
 
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest) -> ChatResponse:
-    """Non-streaming one-shot chat. Handy for curl smoke tests."""
+    """Non-streaming one-shot chat (tools run, only the answer is returned).
+
+    Handy for curl smoke tests.
+    """
+    assert state.llm is not None  # set by lifespan
+    parts: list[str] = []
     try:
-        reply = "".join([tok async for tok in _stream_reply(req.session_id, req.text)])
+        async for event in run_turn(state.llm, state.sessions, req.session_id, req.text):
+            if event["type"] == "token":
+                parts.append(event["text"])
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=f"LLM backend error: {exc}") from exc
-    return ChatResponse(reply=reply)
-
-
-async def _stream_llm(messages: list[dict]):
-    """Stream LLM tokens, translating provider failures to RuntimeError."""
-    assert state.llm is not None  # set by lifespan
-    try:
-        async for token in state.llm.stream_chat(messages):
-            yield token
-    except Exception as exc:  # noqa: BLE001 - surface a clean error to clients
-        raise RuntimeError(str(exc)) from exc
-
-
-async def _stream_reply(session_id: str, text: str):
-    """Record the user turn, stream the assistant reply, persist history."""
-    state.sessions.add(session_id, "user", text)
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}, *state.sessions.history(session_id)]
-    reply_parts: list[str] = []
-    async for token in _stream_llm(messages):
-        reply_parts.append(token)
-        yield token
-    state.sessions.add(session_id, "assistant", "".join(reply_parts))
+    return ChatResponse(reply="".join(parts))
 
 
 async def _voice_turn(ws: WebSocket, session_id: str, audio) -> None:
@@ -120,9 +112,10 @@ async def _voice_turn(ws: WebSocket, session_id: str, audio) -> None:
         await ws.send_json({"type": "ptt_state", "state": "idle"})
         return
     await ws.send_json({"type": "transcript", "text": transcript})
+    assert state.llm is not None
     try:
-        async for token in _stream_reply(session_id, transcript):
-            await ws.send_json({"type": "token", "text": token})
+        async for event in run_turn(state.llm, state.sessions, session_id, transcript):
+            await ws.send_json(event)
     except RuntimeError as exc:
         await ws.send_json({"type": "error", "message": str(exc)})
         return
@@ -264,9 +257,10 @@ async def ws_chat(ws: WebSocket, session_id: str) -> None:
                 await ws.send_json({"type": "error", "message": "expected user_message"})
                 continue
             text = str(msg["text"]).strip()
+            assert state.llm is not None  # set by lifespan
             try:
-                async for token in _stream_reply(session_id, text):
-                    await ws.send_json({"type": "token", "text": token})
+                async for event in run_turn(state.llm, state.sessions, session_id, text):
+                    await ws.send_json(event)
             except RuntimeError as exc:
                 await ws.send_json({"type": "error", "message": str(exc)})
                 continue

@@ -5,6 +5,7 @@ runs out of the box against a local Ollama install.
 """
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -27,6 +28,14 @@ class Settings(BaseSettings):
 
     # --- memory (v1 scope guardrail: session-scoped buffer only) ---
     max_history_messages: int = 24
+    # Phase 2.5: persist sessions to this JSON file so CLI chats survive a
+    # backend restart. Empty string disables persistence (tests use this).
+    history_path: str = ".jarvis_history.json"
+
+    # --- tools (Phase 2.5: read-only brain/tool loop) ---
+    # Sandbox root for filesystem tools: everything outside is unreachable.
+    # Default is the repo root, resolved from this file, not the cwd.
+    tool_root: str = str(Path(__file__).resolve().parents[2])
 
     # --- speech (Phase 1: push-to-talk voice loop) ---
     # STT via faster-whisper. `device` may be "auto" (tries CUDA, falls back to

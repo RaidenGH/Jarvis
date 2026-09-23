@@ -5,12 +5,12 @@ swapping in a cloud provider later is a config change plus one new class.
 """
 
 import json
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 import httpx
 
 from ..session import Message
-from .base import LLMClient
+from .base import LLMClient, LLMReply, ToolCall
 
 
 class OllamaClient(LLMClient):
@@ -34,3 +34,48 @@ class OllamaClient(LLMClient):
                     token = delta.get("content")
                     if token:
                         yield token
+
+    async def complete(
+        self, messages: list[Message], tools: list[dict] | None = None
+    ) -> LLMReply:
+        """One non-streaming turn, with tool calling when tools are offered.
+
+        Ollama's /v1 endpoint accepts the OpenAI `tools` shape and returns
+        `tool_calls` on the message — assembled here into an LLMReply.
+        """
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "stream": False,
+        }
+        if tools:
+            payload["tools"] = tools
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(self._url, json=payload)
+            resp.raise_for_status()
+            message = resp.json()["choices"][0]["message"]
+
+        calls = []
+        for raw in message.get("tool_calls") or []:
+            fn = raw.get("function") or {}
+            calls.append(
+                ToolCall(
+                    name=str(fn.get("name", "")),
+                    arguments=_parse_arguments(fn.get("arguments")),
+                    id=raw.get("id"),
+                )
+            )
+        return LLMReply(content=message.get("content") or "", tool_calls=calls)
+
+
+def _parse_arguments(raw: Any) -> dict:
+    """Ollama/OpenAI send arguments as a JSON string; tolerate dicts too."""
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
