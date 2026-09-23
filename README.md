@@ -2,19 +2,23 @@
 
 Local Jarvis that can work offline and help you on your devices.
 
-**Status: Phase 2.5** — text chat, a push-to-talk voice loop, and an
+**Status: Phase 3** — text chat, a push-to-talk voice loop, and an
 always-listening mode: tap the ear, say "Hey Jarvis", and speak without
 touching anything. Offline STT via faster-whisper, offline TTS via Kokoro-82M,
-wake word + VAD via openWakeWord, brain via local Ollama — now with a working
-**tool-calling agent loop** (read-only tools) and a terminal front-end,
-`jarvis_cli.py`. See `docs/PLAN.md` for the full roadmap.
+wake word + VAD via openWakeWord, brain via local Ollama — with a working
+**tool-calling agent loop**, a terminal front-end (`jarvis_cli.py`), and the
+first piece of the **permission layer**: every tool carries a risk tier and
+anything above read-only has to be approved by you before it runs. See
+`docs/PLAN.md` for the full roadmap.
 
 ```
 app/       Flutter Windows shell (chat UI, talks to backend over WebSocket)
 jarvis_cli.py   Terminal front-end to the same agent loop (Phase 2.5)
 backend/   FastAPI service (session memory + LLM + speech pipeline)
 backend/app/agent.py   agent loop: LLM → decide → call tool → respond
-backend/app/tools/     allow-listed tools (system_stats, read_file — sandboxed)
+backend/app/tools/     allow-listed tools, each tagged with a risk tier
+                      (system_stats, read_file — both read-only, so both run
+                      without prompting; base.py holds the tier→policy table)
 backend/app/speech/   STT (faster-whisper), TTS (Kokoro-onnx), mic (sounddevice),
                       wake word (openWakeWord), VAD endpointing
 docs/      Development plan
@@ -71,6 +75,12 @@ backend/.venv/Scripts/python jarvis_cli.py     # needs websockets, which the ven
 
 Ask e.g. "what are my system stats?" or "read app/lib/main.dart" and you'll
 see the tool call (`⚙ system_stats({})`), its result, then the answer.
+If you ask for something above the read-only tier, the CLI stops mid-turn and
+asks you to approve it (`⚠ set_volume({...})`) — `y/N` for the one-tap tiers,
+or an exact retype of the challenge phrase for destructive ones. Answer no and
+you'll see `✋ set_volume did not run`. `/tools` now lists each tool with its
+risk tier.
+
 Commands inside the chat: `/tools`, `/reset`, `/quit`. `--new` clears the
 session's history on startup. Conversation history is persisted by the
 backend to `.jarvis_history.json`, so both CLI and Flutter chats survive a
@@ -108,6 +118,7 @@ flutter pub get
 | `JARVIS_VAD_ENGINE` | `energy` | Endpointing VAD: `energy` or `silero` |
 | `JARVIS_HISTORY_PATH` | `.jarvis_history.json` | Where sessions persist between runs (empty disables) |
 | `JARVIS_TOOL_ROOT` | repo root | Sandbox root for `read_file` — nothing outside is reachable |
+| `JARVIS_CONFIRM_TIMEOUT_SECONDS` | `120` | How long to wait for an approval before treating it as a refusal |
 
 ## API surface
 
@@ -120,6 +131,18 @@ flutter pub get
   answer the backend interleaves `{"type":"tool_call","name","arguments"}` and
   `{"type":"tool_result","name","result"}` frames (clients that don't know
   them just ignore them)
+- **Permissions (risk tiers):** each tool has a tier — `read-only`,
+  `reversible-write`, `destructive`, `external-facing` — and `GET /health`
+  reports them as `tool_risks`. Read-only tools just run. Anything above that
+  triggers `{"type":"confirm_request","name","arguments","risk","mode",
+  "challenge"}`; the client answers `{"type":"confirm_response","approved":
+  bool,"challenge":"..."}`. `mode` is `tap` (approve/deny) or `typed`, where
+  `approved` is only honored together with an exact echo of `challenge` — so a
+  stray "yes" can't satisfy a destructive action. If the answer is no (or
+  nothing comes back within the timeout) the call never runs and the client
+  gets `{"type":"tool_denied","name","reason"}`. `external-facing` tools are
+  disabled outright and are never even asked about. Over REST `/chat` there is
+  nobody to ask, so every gated tool is declined automatically
 - **Push-to-talk:** send `{"type":"ptt_start"}`, then `{"type":"ptt_stop"}`.
   The backend records the mic, streams `{"type":"transcript","text":...}`,
   replies via the normal token stream, then plays the spoken reply

@@ -7,12 +7,21 @@ consume in Phase 4).
 
 import json
 
-from .base import Tool
+from .base import Tool, policy_for
 from .files import READ_FILE
 from .system import SYSTEM_STATS
 
 TOOLS: list[Tool] = [SYSTEM_STATS, READ_FILE]
 _BY_NAME: dict[str, Tool] = {t.name: t for t in TOOLS}
+
+
+def get_tool(name: str) -> Tool | None:
+    return _BY_NAME.get(name)
+
+
+def tool_risks() -> dict[str, str]:
+    """Tool name -> risk tier, for /health and client-side display."""
+    return {t.name: t.risk for t in TOOLS}
 
 
 def tool_specs() -> list[dict]:
@@ -59,6 +68,9 @@ __all__ = [
     "TOOLS",
     "tool_specs",
     "tool_names",
+    "tool_risks",
+    "get_tool",
+    "policy_for",
     "execute_tool",
     "result_json",
 ]

@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     # Default is the repo root, resolved from this file, not the cwd.
     tool_root: str = str(Path(__file__).resolve().parents[2])
 
+    # --- permissions (Phase 3: risk tiers + confirmation gate) ---
+    # How long to wait for a human to answer a confirm_request before treating
+    # it as a refusal. Without this a client that never replies would park the
+    # turn (and the mic) forever.
+    confirm_timeout_seconds: float = 120.0
+
     # --- speech (Phase 1: push-to-talk voice loop) ---
     # STT via faster-whisper. `device` may be "auto" (tries CUDA, falls back to
     # CPU), "cuda" (needs cuDNN/cuBLAS DLLs next to ctranslate2 on Windows),

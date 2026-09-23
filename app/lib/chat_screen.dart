@@ -30,6 +30,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _speaking = false;
   String _pttState = 'idle'; // idle | recording | transcribing
   bool _listening = false; // always-listening (wake word) armed
+  bool _confirming = false; // approval dialog is up for a gated tool call
   String _wakeWord = 'hey jarvis';
 
   @override
@@ -120,7 +121,12 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() => _speaking = true);
       case 'tts_done':
         setState(() => _speaking = false);
+      case 'confirm_request':
+        _askConfirmation(map);
+      case 'tool_denied':
+        _showError((map['reason'] ?? 'action was not approved') as String);
       case 'error':
+        setState(() => _assistantTyping = false);
         _showError((map['message'] ?? 'error') as String);
       default:
         break;
@@ -143,6 +149,82 @@ class _ChatScreenState extends State<ChatScreen> {
       _input.clear();
     });
     _channel!.sink.add(jsonEncode({'type': 'user_message', 'text': text}));
+  }
+
+  /// Ask the human to approve a gated tool call, then answer the backend.
+  ///
+  /// The backend enforces this too — a typed tier is only satisfied by an
+  /// exact echo of its challenge phrase — so matching the text here just
+  /// keeps the Allow button honest, it isn't the security boundary.
+  Future<void> _askConfirmation(Map<String, dynamic> request) async {
+    if (!mounted) return;
+    final name = (request['name'] ?? 'action') as String;
+    final risk = (request['risk'] ?? 'unknown') as String;
+    final mode = (request['mode'] ?? 'tap') as String;
+    final challenge = (request['challenge'] ?? '') as String;
+    final args = jsonEncode(request['arguments'] ?? const <String, dynamic>{});
+    final typed = TextEditingController();
+    setState(() => _confirming = true);
+
+    bool ok = false;
+    String typedText = '';
+    try {
+      final approved = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            final matches = typed.text.trim() == challenge;
+            return AlertDialog(
+              title: const Text('Allow this action?'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SelectableText('$name($args)'),
+                  const SizedBox(height: 8),
+                  Text('Risk tier: $risk',
+                      style: Theme.of(ctx).textTheme.bodySmall),
+                  if (mode == 'typed') ...[
+                    const SizedBox(height: 12),
+                    Text('Type "$challenge" to confirm:'),
+                    TextField(
+                      controller: typed,
+                      autofocus: true,
+                      onChanged: (_) => setDialogState(() {}),
+                      decoration: const InputDecoration(isDense: true),
+                    ),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  child: const Text('Deny'),
+                ),
+                FilledButton(
+                  onPressed: (mode == 'typed' && !matches)
+                      ? null
+                      : () => Navigator.of(ctx).pop(true),
+                  child: const Text('Allow'),
+                ),
+              ],
+            );
+          },
+        ),
+      );
+      ok = approved ?? false;
+      typedText = typed.text.trim();
+    } finally {
+      typed.dispose();
+      if (mounted) setState(() => _confirming = false);
+    }
+
+    _channel?.sink.add(jsonEncode({
+      'type': 'confirm_response',
+      'approved': ok,
+      'challenge': mode == 'typed' ? typedText : null,
+    }));
   }
 
   void _sendPtt(String type) {
@@ -172,6 +254,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   String? get _statusLine {
+    if (_confirming) return 'Waiting for your approval…';
     if (_pttState == 'recording') return 'Listening… release when done';
     if (_pttState == 'transcribing') return 'Transcribing…';
     if (_speaking) return 'Speaking…';

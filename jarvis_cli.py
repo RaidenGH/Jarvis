@@ -44,10 +44,13 @@ RED = "\x1b[31m"
 
 HELP = """\
 Type a message and press enter. Commands:
-  /tools   list the tools the brain may call
+  /tools   list the tools the brain may call, with their risk tiers
   /reset   clear this conversation's history
   /help    show this help
   /quit    exit (Ctrl+C also works)
+
+Anything above the read-only risk tier needs your approval before it runs —
+you'll be prompted right here.
 """
 
 MAX_RESULT_CHARS = 600
@@ -59,10 +62,10 @@ def color(text: str, code: str) -> str:
     return f"{code}{text}{RESET}"
 
 
-def read_line() -> str | None:
+def read_line(prompt: str = "") -> str | None:
     """Blocking input on a worker thread; None means EOF (Ctrl+D)."""
     try:
-        return input()
+        return input(prompt)
     except EOFError:
         return None
 
@@ -89,6 +92,44 @@ def print_tool_result(event: dict) -> None:
     print(color(f"  ↳ {result}", DIM))
 
 
+def print_tool_denied(event: dict) -> None:
+    print(color(f"  ✋ {event.get('name')} did not run — {event.get('reason')}", RED))
+
+
+def ask_confirmation(event: dict) -> dict:
+    """Blocking prompt for a confirm_request; returns our confirm_response.
+
+    Runs on a worker thread (the caller wraps it), because the socket must stay
+    readable while the human thinks. Typed tiers require retyping the phrase
+    exactly — the backend checks it, we just report what was typed.
+    """
+    args = json.dumps(event.get("arguments") or {}, ensure_ascii=False)
+    print()
+    print(color(f"  ⚠ {event.get('name')}({args})", YELLOW))
+    print(color(f"    risk tier: {event.get('risk')}", DIM))
+
+    if event.get("mode") == "typed":
+        challenge = event.get("challenge") or ""
+        print(
+            color(
+                f'    type "{challenge}" and press enter to approve, '
+                "or just press enter to decline",
+                RED,
+            )
+        )
+        typed = (read_line("    > ") or "").strip()
+        if not typed:
+            return {"type": "confirm_response", "approved": False}
+        return {
+            "type": "confirm_response",
+            "approved": True,
+            "challenge": typed,
+        }
+
+    answer = (read_line("    approve? [y/N] ") or "").strip().lower()
+    return {"type": "confirm_response", "approved": answer in ("y", "yes")}
+
+
 async def consume_reply(ws) -> None:
     """Print frames until the backend says the turn is done."""
     async for raw in ws:
@@ -100,6 +141,11 @@ async def consume_reply(ws) -> None:
             print_tool_call(event)
         elif kind == "tool_result":
             print_tool_result(event)
+        elif kind == "tool_denied":
+            print_tool_denied(event)
+        elif kind == "confirm_request":
+            reply = await asyncio.to_thread(ask_confirmation, event)
+            await ws.send(json.dumps(reply))
         elif kind == "done":
             print()
             return
@@ -151,8 +197,12 @@ async def repl(ws_url: str, new: bool) -> None:
                 continue
             if text == "/tools":
                 health = await asyncio.to_thread(fetch_health, ws_url)
+                risks = (health or {}).get("tool_risks") or {}
                 listed = (health or {}).get("tools", [])
-                print(color("  " + (", ".join(listed) or "none"), DIM))
+                for name in listed:
+                    print(color(f"  {name:<14} {risks.get(name, '?')}", DIM))
+                if not listed:
+                    print(color("  none", DIM))
                 continue
             if text == "/reset":
                 await ws.send(json.dumps({"type": "reset"}))
