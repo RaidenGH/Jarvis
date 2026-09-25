@@ -16,6 +16,7 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -27,7 +28,7 @@ from .config import Settings, get_settings
 from .llm import LLMClient, build_client
 from .session import SessionStore
 from .speech import SpeechService
-from .tools import tool_names, tool_risks
+from .tools import check_names, clear_plan, tool_names, tool_risks
 
 
 @dataclass
@@ -42,9 +43,21 @@ class State:
 state = State()
 
 
-def _brain_label() -> str:
-    """Which reasoning path handled a turn, as recorded in the audit log."""
-    return f"{state.settings.llm_provider}:{state.settings.llm_model}"
+def _brain_label(model: str | None = None) -> str:
+    """Which reasoning path handled a turn, as recorded in the audit log.
+
+    A client may override the model for one run (`--model`), so the label
+    follows whatever is actually being asked, not just the config.
+    """
+    return f"{state.settings.llm_provider}:{model or state.settings.llm_model}"
+
+
+def _turn_brain(model: str | None = None) -> LLMClient:
+    """The client for one turn: the shared one, or a model override."""
+    assert state.llm is not None  # set by lifespan
+    if not model or model == state.settings.llm_model:
+        return state.llm
+    return build_client(state.settings, model=model)
 
 
 @asynccontextmanager
@@ -95,6 +108,9 @@ async def health() -> dict:
         "wake_word": s.wake_word,
         "tools": tool_names(),
         "tool_risks": tool_risks(),
+        "checks": check_names(),
+        "max_tool_rounds": s.max_tool_rounds,
+        "tool_root": str(Path(s.tool_root).expanduser().resolve()),
         "audit_path": str(state.audit.path) if state.audit and state.audit.path else None,
     }
 
@@ -125,6 +141,8 @@ async def chat(req: ChatRequest) -> ChatResponse:
             req.text,
             audit=state.audit,
             brain=_brain_label(),
+            max_rounds=state.settings.max_tool_rounds,
+            tool_context_chars=state.settings.tool_context_chars,
         ):
             if event["type"] == "token":
                 parts.append(event["text"])
@@ -198,16 +216,18 @@ async def ws_chat(ws: WebSocket, session_id: str) -> None:
 
     turn_done = object()
 
-    async def _pump_turn(text: str) -> bool:
+    async def _pump_turn(text: str, model: str | None = None) -> bool:
         """Stream one agent turn, staying able to read the socket meanwhile.
 
         Returns True if the turn completed, False if it failed (the client got
         an `error` frame). The loop runs as a task so `await confirm(...)`
         inside it doesn't stop us receiving the answer.
+
+        `model` is the caller's per-run override, if any — see `--model`.
         """
-        assert state.llm is not None
         events: asyncio.Queue = asyncio.Queue()
         failed = False
+        llm = _turn_brain(model)
 
         async def _ask(request: dict) -> ConfirmationDecision:
             """Queue the question behind the tool_call that caused it, then
@@ -222,13 +242,15 @@ async def ws_chat(ws: WebSocket, session_id: str) -> None:
             nonlocal failed
             try:
                 async for event in run_turn(
-                    state.llm,
+                    llm,
                     state.sessions,
                     session_id,
                     text,
                     confirm=_ask,
                     audit=state.audit,
-                    brain=_brain_label(),
+                    brain=_brain_label(model),
+                    max_rounds=state.settings.max_tool_rounds,
+                    tool_context_chars=state.settings.tool_context_chars,
                 ):
                     events.put_nowait(event)
             except RuntimeError as exc:
@@ -333,6 +355,7 @@ async def ws_chat(ws: WebSocket, session_id: str) -> None:
 
             if mtype == "reset":
                 state.sessions.reset(session_id)
+                clear_plan()
                 await ws.send_json({"type": "reset_done"})
                 continue
 
@@ -406,7 +429,9 @@ async def ws_chat(ws: WebSocket, session_id: str) -> None:
                 await ws.send_json({"type": "error", "message": "expected user_message"})
                 continue
             text = str(msg["text"]).strip()
-            if await _pump_turn(text):
+            override = msg.get("model")
+            model = override.strip() if isinstance(override, str) else None
+            if await _pump_turn(text, model=model or None):
                 await ws.send_json({"type": "done"})
     except WebSocketDisconnect:
         pass

@@ -1,22 +1,42 @@
 """Tool registry: the allow-list of actions the brain is allowed to call.
 
-`tool_specs()` renders OpenAI function-calling JSON — the common currency
-Ollama's /v1 endpoint speaks today (and the Anthropic translation layer can
-consume in Phase 4).
+Ordered the way an agent should think about them: look, then remember, then
+act, then check. `tool_specs()` renders OpenAI function-calling JSON — the
+common currency Ollama's /v1 endpoint speaks today (and the Anthropic
+translation layer can consume in Phase 4).
 """
 
 import json
 
 from .apps import OPEN_APP
 from .base import Tool, policy_for
-from .files import READ_FILE, SEARCH_FILES
+from .checks import RUN_CHECKS, check_names
+from .files import (
+    EDIT_FILE,
+    GREP_FILES,
+    LIST_DIR,
+    READ_FILE,
+    SEARCH_FILES,
+    WRITE_FILE,
+)
+from .plan import UPDATE_PLAN, clear_plan, current_plan
 from .system import SYSTEM_STATS
 from .volume import CHANGE_VOLUME
 
 TOOLS: list[Tool] = [
+    # look
     SYSTEM_STATS,
+    LIST_DIR,
     READ_FILE,
     SEARCH_FILES,
+    GREP_FILES,
+    # remember
+    UPDATE_PLAN,
+    # act
+    WRITE_FILE,
+    EDIT_FILE,
+    # verify
+    RUN_CHECKS,
     OPEN_APP,
     CHANGE_VOLUME,
 ]
@@ -66,8 +86,23 @@ def execute_tool(name: str, arguments: dict) -> dict:
     return {"result": result}
 
 
+def tool_preview(name: str, arguments: dict) -> str | None:
+    """The approval-prompt preview for a call, or None if the tool has none.
+
+    Never raises: a preview that blows up just means a plainer prompt, never a
+    failed turn.
+    """
+    tool = _BY_NAME.get(name)
+    if tool is None or tool.preview is None:
+        return None
+    try:
+        return tool.preview(arguments if isinstance(arguments, dict) else {})
+    except Exception as exc:  # noqa: BLE001 - cosmetic only
+        return f"(preview unavailable: {type(exc).__name__})"
+
+
 def result_json(result: dict) -> str:
-    """Compact JSON for the `role: "tool"` message the model reads back."""
+    """Compact JSON for the `role: \"tool\"` message the model reads back."""
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
@@ -80,5 +115,9 @@ __all__ = [
     "get_tool",
     "policy_for",
     "execute_tool",
+    "tool_preview",
     "result_json",
+    "check_names",
+    "clear_plan",
+    "current_plan",
 ]

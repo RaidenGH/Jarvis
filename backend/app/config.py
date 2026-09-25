@@ -21,9 +21,10 @@ class Settings(BaseSettings):
     llm_provider: str = "ollama"  # "ollama" for now; cloud providers come in Phase 4
     ollama_base_url: str = "http://localhost:11434"
     # Don't hardcode a model choice into the plan; this is just the default.
-    # Check `ollama.com/library` at build time and pick a small instruct model
-    # with good tool-calling support, e.g. qwen3:4b / llama3.2:3b.
-    llm_model: str = "qwen3:4b"
+    # It is a 7B because that is roughly where the agent loop starts to hold:
+    # below it a model tends to describe an edit instead of making one, or to
+    # announce a test result it never ran. Override per run with `--model`.
+    llm_model: str = "qwen2.5:7b"
     request_timeout_seconds: float = 120.0
 
     # --- memory (v1 scope guardrail: session-scoped buffer only) ---
@@ -47,6 +48,18 @@ class Settings(BaseSettings):
     # (e.g. "steam=steam,code=code"). Added to a built-in list; nothing off
     # the list can be opened.
     app_allowlist: str = ""
+
+    # --- agent loop (Phase 3.5: multi-step coding work) ---
+    # How many tool round-trips one turn may take before the loop stops. Chat
+    # needs one or two; "find why this test fails and fix it" needs a dozen.
+    max_tool_rounds: int = 25
+    # Wall-clock cap for a single `run_checks` invocation. A hung test suite
+    # must not wedge the turn (or the mic).
+    check_timeout_seconds: float = 180.0
+    # Rough ceiling on the characters of tool output carried through one turn.
+    # Past this the oldest tool results are elided, so a long run can't
+    # silently blow the model's context window. ~4 chars/token.
+    tool_context_chars: int = 120_000
 
     # --- audit (Phase 3: append-only record of every tool call) ---
     # One JSON object per line. Empty string disables logging (tests use this).

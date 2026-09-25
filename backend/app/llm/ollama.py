@@ -10,7 +10,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from ..session import Message
-from .base import LLMClient, LLMReply, ToolCall
+from .base import LLMChunk, LLMClient, LLMReply, ToolCall
 
 
 class OllamaClient(LLMClient):
@@ -34,6 +34,51 @@ class OllamaClient(LLMClient):
                     token = delta.get("content")
                     if token:
                         yield token
+
+    async def stream_complete(
+        self, messages: list[Message], tools: list[dict] | None = None
+    ) -> AsyncIterator[LLMChunk]:
+        """Stream one turn, including tool calls.
+
+        Ollama's /v1 endpoint streams OpenAI-shaped deltas: `content` (and
+        `reasoning` for thinking models like qwen3) arrive as text fragments,
+        while `tool_calls` arrive as fragments keyed by index that only make
+        sense once the argument JSON is complete. So text is yielded the moment
+        it exists and the calls are yielded assembled at the end.
+        """
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "stream": True,
+        }
+        if tools:
+            payload["tools"] = tools
+
+        pending: dict[int, dict] = {}
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with client.stream("POST", self._url, json=payload) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[len("data: ") :]
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        delta = json.loads(data)["choices"][0].get("delta") or {}
+                    except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+                        continue  # tolerate a malformed frame mid-stream
+
+                    reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+                    if reasoning:
+                        yield LLMChunk(reasoning=reasoning)
+                    text = delta.get("content")
+                    if text:
+                        yield LLMChunk(text=text)
+                    for raw in delta.get("tool_calls") or []:
+                        _accumulate(pending, raw)
+
+        yield LLMChunk(calls=_assemble(pending))
 
     async def complete(
         self, messages: list[Message], tools: list[dict] | None = None
@@ -66,6 +111,42 @@ class OllamaClient(LLMClient):
                 )
             )
         return LLMReply(content=message.get("content") or "", tool_calls=calls)
+
+
+def _accumulate(pending: dict[int, dict], raw: Any) -> None:
+    """Fold one streamed tool-call fragment into the pending call for its slot."""
+    if not isinstance(raw, dict):
+        return
+    try:
+        index = int(raw.get("index") or 0)
+    except (TypeError, ValueError):
+        index = 0
+    slot = pending.setdefault(index, {"id": None, "name": "", "arguments": ""})
+    if raw.get("id"):
+        slot["id"] = raw["id"]
+    function = raw.get("function") or {}
+    if isinstance(function.get("name"), str):
+        slot["name"] += function["name"]
+    if isinstance(function.get("arguments"), str):
+        slot["arguments"] += function["arguments"]
+
+
+def _assemble(pending: dict[int, dict]) -> list[ToolCall]:
+    """Turn accumulated fragments into tool calls, in the order they started."""
+    calls = []
+    for index in sorted(pending):
+        slot = pending[index]
+        name = slot["name"].strip()
+        if not name:
+            continue  # a fragment without a name is noise
+        calls.append(
+            ToolCall(
+                name=name,
+                arguments=_parse_arguments(slot["arguments"]),
+                id=slot["id"],
+            )
+        )
+    return calls
 
 
 def _parse_arguments(raw: Any) -> dict:

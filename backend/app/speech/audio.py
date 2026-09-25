@@ -35,10 +35,12 @@ class MicRecorder:
 
         def _callback(indata, _frames, _time, _status) -> None:
             # Called on PortAudio's audio thread; just buffer and enforce cap.
+            # `indata` is (frames, channels) even with channels=1, so take the
+            # mono column here and keep the buffer one-dimensional throughout.
             with self._lock:
                 remaining = self._max_frames - sum(f.size for f in self._frames)
                 if remaining > 0:
-                    self._frames.append(indata[:remaining].copy())
+                    self._frames.append(indata[:remaining, 0].copy())
 
         self._stream = self._sd.InputStream(
             samplerate=self._sample_rate, channels=1, dtype="float32", callback=_callback
@@ -46,7 +48,13 @@ class MicRecorder:
         self._stream.start()
 
     def stop(self) -> np.ndarray:
-        """Stop capturing and return everything recorded so far."""
+        """Stop capturing and return everything recorded so far as a mono,
+        one-dimensional float32 waveform.
+
+        Flattened on the way out as well as on the way in: a `(samples, 1)`
+        block reaching faster-whisper is read as a *batch* of samples, and the
+        resulting mel spectrogram asks numpy for tens of gigabytes.
+        """
         stream, self._stream = self._stream, None
         if stream is not None:
             stream.stop()
@@ -55,7 +63,9 @@ class MicRecorder:
             frames, self._frames = self._frames, []
         if not frames:
             return np.zeros(0, dtype=np.float32)
-        return np.concatenate(frames)
+        return np.ascontiguousarray(
+            np.concatenate(frames).reshape(-1), dtype=np.float32
+        )
 
 
 class SpeakerPlayer:

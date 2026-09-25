@@ -78,3 +78,8 @@ class Tool:
     parameters: dict  # JSON Schema for the arguments object
     handler: Callable[[dict], dict]
     risk: str = READ_ONLY
+    #: Optional `preview(args) -> str` rendered in the approval prompt before
+    #: the tool runs — the editing tools return a unified diff here so the
+    #: human approves a change, not a function signature. Must never raise:
+    #: a missing preview just means a plainer prompt.
+    preview: Callable[[dict], str | None] | None = None

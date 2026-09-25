@@ -114,7 +114,7 @@ def test_tool_call_limit_stops_runaway_loops(agent_client):
         events = _collect_until(ws)
 
     tool_calls = [e for e in events if e["type"] == "tool_call"]
-    assert len(tool_calls) == 5  # MAX_TOOL_ROUNDS
+    assert len(tool_calls) == state.settings.max_tool_rounds
     assert "limit" in state.sessions.history("a4")[-1]["content"]
 
 

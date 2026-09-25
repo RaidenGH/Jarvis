@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>JARVIS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0d13;
+    --glass: rgba(255,255,255,0.045);
+    --glass-strong: rgba(255,255,255,0.07);
+    --border: rgba(255,255,255,0.08);
+    --border-strong: rgba(255,255,255,0.16);
+    --text: #eef0f6;
+    --text-dim: #9aa2b6;
+    --text-faint: #5b6378;
+    --cyan: #6ee7dd;
+    --violet: #b9a6ff;
+    --font-ui: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-ui);
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- Ambient background: soft blurred glow fields, no grid ---------- */
+  .glow {
+    position: fixed;
+    z-index: 0;
+    pointer-events: none;
+    border-radius: 50%;
+    filter: blur(90px);
+    opacity: 0.55;
+  }
+  .glow.a { width: 46vw; height: 46vw; top: -14vw; left: -8vw; background: radial-gradient(circle, var(--cyan), transparent 70%); }
+  .glow.b { width: 50vw; height: 50vw; bottom: -20vw; right: -12vw; background: radial-gradient(circle, var(--violet), transparent 70%); opacity: 0.4; }
+
+  .grain {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    opacity: 0.025;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='90' height='90'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  .app {
+    position: relative;
+    z-index: 2;
+    height: 100%;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 0 18px;
+  }
+
+  /* ---------- Status bar ---------- */
+  .statusbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 22px 6px 8px;
+    gap: 12px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+
+  .brand-mark {
+    width: 22px;
+    height: 22px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--cyan), var(--violet));
+    flex-shrink: 0;
+  }
+
+  .brand-name {
+    font-weight: 600;
+    font-size: 15.5px;
+    letter-spacing: 0.2px;
+  }
+
+  .status-chips { display: flex; align-items: center; gap: 8px; }
+
+  .chip {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 8px 13px;
+    border-radius: 100px;
+    background: var(--glass);
+    border: 1px solid var(--border);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.3px;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: border-color 180ms ease, background 180ms ease, color 180ms ease;
+  }
+  .chip:hover { border-color: var(--border-strong); color: var(--text); background: var(--glass-strong); }
+
+  .chip .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .chip.online .dot { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
+  .chip.offline .dot { background: var(--text-faint); }
+
+  .icon-btn {
+    width: 34px; height: 34px; border-radius: 100px;
+    background: var(--glass); border: 1px solid var(--border);
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    color: var(--text-dim);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; transition: all 180ms ease; flex-shrink: 0;
+  }
+  .icon-btn:hover { border-color: var(--border-strong); color: var(--text); background: var(--glass-strong); }
+  .icon-btn svg { width: 15px; height: 15px; }
+
+  /* ---------- Center stage ---------- */
+  .stage {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 30px;
+    padding: 10px 10px;
+    min-height: 0;
+  }
+
+  .orb-wrap {
+    position: relative;
+    width: 208px;
+    height: 208px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .orb-ring {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+  }
+
+  .orb-ring.accent {
+    border: 1.5px solid transparent;
+    border-top-color: var(--cyan);
+    border-right-color: var(--violet);
+    opacity: 0.55;
+    animation: spin 5s linear infinite;
+  }
+  .orb-ring.thinking-ring {
+    border: 1.5px solid transparent;
+    border-top-color: var(--violet);
+    border-left-color: var(--cyan);
+    opacity: 0.9;
+    animation: spin 1.7s linear infinite;
+    display: none;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .bars { position: absolute; inset: 0; }
+
+  .bar {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 3px;
+    border-radius: 3px;
+    background: linear-gradient(180deg, var(--cyan), var(--violet));
+    transform-origin: center 0px;
+    height: 7px;
+    opacity: 0.8;
+    transition: height 100ms ease-out;
+  }
+
+  .orb-core {
+    position: relative;
+    width: 96px;
+    height: 96px;
+    border-radius: 50%;
+    background:
+      radial-gradient(circle at 32% 28%, rgba(255,255,255,0.3), transparent 45%),
+      radial-gradient(circle at 66% 68%, var(--violet), transparent 60%),
+      radial-gradient(circle at 34% 66%, var(--cyan), transparent 58%),
+      #171b26;
+    box-shadow:
+      0 0 44px rgba(110, 231, 221, 0.22),
+      0 0 90px rgba(185, 166, 255, 0.12),
+      inset 0 0 24px rgba(0,0,0,0.4);
+    animation: breathe 4s ease-in-out infinite;
+    z-index: 2;
+  }
+  @keyframes breathe {
+    0%, 100% { transform: scale(1); filter: brightness(1); }
+    50% { transform: scale(1.04); filter: brightness(1.14); }
+  }
+  .orb-core.active { animation: none; }
+
+  .state-caption { text-align: center; max-width: 380px; padding: 0 8px; }
+
+  .state-label {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 1.6px;
+    text-transform: uppercase;
+    color: var(--cyan);
+    margin-bottom: 10px;
+    height: 13px;
+    transition: color 200ms ease;
+  }
+  .state-label.thinking { color: var(--violet); }
+  .state-label.idle { color: var(--text-faint); }
+
+  .caption-text {
+    font-size: 16px;
+    line-height: 1.55;
+    color: var(--text);
+    min-height: 26px;
+    font-weight: 400;
+  }
+  .caption-text.dim { color: var(--text-dim); }
+
+  /* ---------- Transcript ---------- */
+  .transcript-toggle { display: flex; justify-content: center; padding-bottom: 4px; }
+  .transcript-toggle button {
+    background: var(--glass);
+    border: 1px solid var(--border);
+    border-radius: 100px;
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    color: var(--text-faint);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.6px;
+    display: flex; align-items: center; gap: 6px;
+    cursor: pointer; padding: 7px 14px;
+    transition: all 180ms ease;
+  }
+  .transcript-toggle button:hover { color: var(--text-dim); border-color: var(--border-strong); }
+  .transcript-toggle svg { width: 10px; height: 10px; transition: transform 200ms ease; }
+  .transcript-toggle.open svg { transform: rotate(180deg); }
+
+  .transcript {
+    max-height: 0; overflow: hidden;
+    transition: max-height 300ms ease;
+    margin-top: 10px;
+  }
+  .transcript.open {
+    max-height: 170px;
+    overflow-y: auto;
+    background: var(--glass);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  }
+
+  .transcript-inner { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { display: flex; gap: 10px; max-width: 90%; }
+  .msg.user { align-self: flex-end; flex-direction: row-reverse; }
+  .msg-bubble { padding: 9px 13px; border-radius: 14px; font-size: 13px; line-height: 1.5; }
+  .msg.assistant .msg-bubble { background: rgba(255,255,255,0.045); border: 1px solid var(--border); color: var(--text); border-bottom-left-radius: 4px; }
+  .msg.user .msg-bubble { background: linear-gradient(135deg, rgba(110,231,221,0.16), rgba(185,166,255,0.16)); border: 1px solid rgba(255,255,255,0.1); color: var(--text); border-bottom-right-radius: 4px; }
+
+  /* ---------- Dock ---------- */
+  .dock {
+    padding: 16px 6px calc(22px + env(safe-area-inset-bottom, 0px));
+    display: flex; flex-direction: column; align-items: center; gap: 16px;
+  }
+
+  .mic-btn {
+    width: 60px; height: 60px; border-radius: 50%;
+    background: var(--glass-strong);
+    border: 1px solid var(--border-strong);
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; color: var(--text); position: relative;
+    transition: transform 140ms ease, border-color 180ms ease, background 180ms ease;
+  }
+  .mic-btn svg { width: 21px; height: 21px; }
+  .mic-btn:hover { transform: scale(1.045); border-color: var(--cyan); }
+  .mic-btn:active { transform: scale(0.96); }
+  .mic-btn.live {
+    background: linear-gradient(135deg, var(--cyan), var(--violet));
+    color: #0b0d13; border-color: transparent;
+  }
+  .mic-btn.live::after {
+    content: '';
+    position: absolute; inset: -8px; border-radius: 50%;
+    border: 1px solid var(--cyan); opacity: 0.5;
+    animation: pulse-ring 1.7s ease-out infinite;
+  }
+  @keyframes pulse-ring { 0% { transform: scale(0.9); opacity: 0.55; } 100% { transform: scale(1.35); opacity: 0; } }
+
+  .segmented {
+    display: flex;
+    padding: 4px;
+    border-radius: 100px;
+    background: var(--glass);
+    border: 1px solid var(--border);
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    gap: 2px;
+  }
+  .segmented button {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.4px;
+    padding: 7px 13px;
+    border-radius: 100px;
+    background: transparent;
+    border: none;
+    color: var(--text-faint);
+    cursor: pointer;
+    transition: all 180ms ease;
+  }
+  .segmented button:hover { color: var(--text-dim); }
+  .segmented button.selected {
+    color: var(--bg);
+    background: var(--text);
+  }
+
+  .hint { font-size: 10px; color: var(--text-faint); text-align: center; max-width: 270px; line-height: 1.6; }
+
+  .transcript::-webkit-scrollbar { width: 4px; }
+  .transcript::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .orb-core, .mic-btn.live::after, .orb-ring.accent, .orb-ring.thinking-ring { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="glow a"></div>
+<div class="glow b"></div>
+<div class="grain"></div>
+
+<div class="app">
+
+  <div class="statusbar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div class="brand-name">Jarvis</div>
+    </div>
+    <div class="status-chips">
+      <button class="chip online" id="modeChip" title="Toggle online / offline">
+        <span class="dot"></span>
+        <span id="modeText">online · claude</span>
+      </button>
+      <button class="icon-btn" title="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="orb-wrap">
+      <div class="orb-ring"></div>
+      <div class="orb-ring accent" id="ringAccent"></div>
+      <div class="orb-ring thinking-ring" id="ringThinking"></div>
+      <div class="bars" id="bars"></div>
+      <div class="orb-core" id="orbCore"></div>
+    </div>
+
+    <div class="state-caption">
+      <div class="state-label idle" id="stateLabel">idle</div>
+      <div class="caption-text dim" id="captionText">Say "Jarvis" or tap the mic to start</div>
+    </div>
+
+    <div>
+      <div class="transcript-toggle" id="transcriptToggle">
+        <button id="transcriptBtn">
+          <span>Transcript</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+      </div>
+      <div class="transcript" id="transcript">
+        <div class="transcript-inner" id="transcriptInner">
+          <div class="msg assistant"><div class="msg-bubble">Good evening. Backend's on localhost, Ollama's warm. What are we building tonight?</div></div>
+          <div class="msg user"><div class="msg-bubble">Check my GPU usage.</div></div>
+          <div class="msg assistant"><div class="msg-bubble">GTX 1660 at 14%, 2.1GB / 6GB VRAM in use. All quiet.</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="dock">
+    <button class="mic-btn" id="micBtn" title="Push to talk">
+      <svg id="micIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+    </button>
+    <div class="segmented" id="demoRow">
+      <button class="selected" data-state="idle">Idle</button>
+      <button data-state="listening">Listening</button>
+      <button data-state="thinking">Thinking</button>
+      <button data-state="speaking">Speaking</button>
+    </div>
+    <div class="hint">Demo build — the segmented control above simulates each voice state since there's no live mic/model wired in here.</div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  const orbCore = document.getElementById('orbCore');
+  const ringAccent = document.getElementById('ringAccent');
+  const ringThinking = document.getElementById('ringThinking');
+  const bars = document.getElementById('bars');
+  const stateLabel = document.getElementById('stateLabel');
+  const captionText = document.getElementById('captionText');
+  const micBtn = document.getElementById('micBtn');
+  const demoBtns = document.querySelectorAll('.segmented button');
+  const modeChip = document.getElementById('modeChip');
+  const modeText = document.getElementById('modeText');
+
+  const BAR_COUNT = 36;
+  const RADIUS = 92;
+  const barEls = [];
+
+  for (let i = 0; i < BAR_COUNT; i++) {
+    const bar = document.createElement('div');
+    bar.className = 'bar';
+    const angle = (i / BAR_COUNT) * 360;
+    bar.style.transform = `rotate(${angle}deg) translateY(-${RADIUS}px)`;
+    bars.appendChild(bar);
+    barEls.push({ el: bar, angle });
+  }
+
+  const captions = {
+    idle: { label: 'idle', text: 'Say "Jarvis" or tap the mic to start', dim: true },
+    listening: { label: 'listening', text: 'Go ahead, I\u2019m listening\u2026', dim: false },
+    thinking: { label: 'thinking', text: 'Working on it\u2026', dim: false },
+    speaking: { label: 'speaking', text: 'Your GPU is sitting at 14% right now \u2014 plenty of headroom.', dim: false }
+  };
+
+  let currentState = 'idle';
+  let t = 0;
+
+  function setBarHeight(i, h) { barEls[i].el.style.height = h + 'px'; }
+  function resetBars(h) { for (let i = 0; i < BAR_COUNT; i++) setBarHeight(i, h); }
+
+  function animate() {
+    t += 1;
+    if (currentState === 'listening') {
+      for (let i = 0; i < BAR_COUNT; i++) {
+        const n = Math.sin(t * 0.11 + i * 0.7) * 0.5 + Math.sin(t * 0.045 + i) * 0.5;
+        setBarHeight(i, 7 + Math.abs(n) * 24 + Math.random() * 5);
+      }
+    } else if (currentState === 'speaking') {
+      for (let i = 0; i < BAR_COUNT; i++) {
+        const n = Math.sin(t * 0.2 + i * 0.4);
+        setBarHeight(i, 9 + Math.abs(n) * 30 + Math.random() * 3);
+      }
+    }
+    requestAnimationFrame(animate);
+  }
+
+  function setState(state) {
+    currentState = state;
+    const c = captions[state];
+    stateLabel.textContent = c.label;
+    stateLabel.className = 'state-label' + (state === 'thinking' ? ' thinking' : state === 'idle' ? ' idle' : '');
+    captionText.textContent = c.text;
+    captionText.className = 'caption-text' + (c.dim ? ' dim' : '');
+    demoBtns.forEach(b => b.classList.toggle('selected', b.dataset.state === state));
+    ringThinking.style.display = state === 'thinking' ? 'block' : 'none';
+    ringAccent.style.opacity = state === 'thinking' ? '0' : '0.55';
+    orbCore.classList.toggle('active', state !== 'idle');
+    micBtn.classList.toggle('live', state === 'listening');
+    if (state === 'idle') resetBars(7);
+    else if (state === 'thinking') resetBars(5);
+  }
+
+  demoBtns.forEach(btn => btn.addEventListener('click', () => setState(btn.dataset.state)));
+  micBtn.addEventListener('click', () => setState(currentState === 'listening' ? 'idle' : 'listening'));
+
+  let online = true;
+  modeChip.addEventListener('click', () => {
+    online = !online;
+    modeChip.classList.toggle('online', online);
+    modeChip.classList.toggle('offline', !online);
+    modeText.textContent = online ? 'online · claude' : 'offline · qwen2.5:7b';
+  });
+
+  const transcriptBtn = document.getElementById('transcriptBtn');
+  const transcript = document.getElementById('transcript');
+  const transcriptToggle = document.getElementById('transcriptToggle');
+  transcriptBtn.addEventListener('click', () => {
+    transcript.classList.toggle('open');
+    transcriptToggle.classList.toggle('open');
+  });
+
+  setState('idle');
+  animate();
+
+  const cycle = ['idle', 'listening', 'thinking', 'speaking'];
+  let cycleIdx = 0;
+  let autoTimer = setInterval(() => {
+    cycleIdx = (cycleIdx + 1) % cycle.length;
+    setState(cycle[cycleIdx]);
+  }, 3200);
+  function stopAuto() { clearInterval(autoTimer); }
+  micBtn.addEventListener('click', stopAuto, { once: true });
+  demoBtns.forEach(b => b.addEventListener('click', stopAuto, { once: true }));
+})();
+</script>
+</body>
+</html>

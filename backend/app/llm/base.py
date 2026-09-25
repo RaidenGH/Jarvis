@@ -28,11 +28,38 @@ class LLMReply:
     tool_calls: list[ToolCall] = field(default_factory=list)
 
 
+@dataclass
+class LLMChunk:
+    """One piece of a streamed turn.
+
+    Most chunks carry `text` (or `reasoning`, for models that narrate their
+    thinking). Tool requests arrive assembled on the final chunk: their
+    arguments stream in as JSON fragments that mean nothing until the last
+    one lands, so they are never handed over half-parsed.
+    """
+
+    text: str = ""
+    reasoning: str = ""
+    calls: list[ToolCall] = field(default_factory=list)
+
+
 class LLMClient(ABC):
     @abstractmethod
     def stream_chat(self, messages: list[Message]) -> AsyncIterator[str]:
         """Yield assistant reply tokens as they are generated."""
         raise NotImplementedError
+
+    async def stream_complete(
+        self, messages: list[Message], tools: list[dict] | None = None
+    ) -> AsyncIterator[LLMChunk]:
+        """Stream one turn as chunks, so a client can print as it arrives.
+
+        The default buffers `complete()` into a single chunk — correct for
+        stubs and for brains with no streaming of their own. Providers that
+        can stream override this.
+        """
+        reply = await self.complete(messages, tools)
+        yield LLMChunk(text=reply.content, calls=reply.tool_calls)
 
     async def complete(
         self, messages: list[Message], tools: list[dict] | None = None

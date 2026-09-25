@@ -20,8 +20,14 @@ def test_specs_use_openai_function_shape():
     specs = tool_specs()
     assert tool_names() == [
         "system_stats",
+        "list_dir",
         "read_file",
         "search_files",
+        "grep_files",
+        "update_plan",
+        "write_file",
+        "edit_file",
+        "run_checks",
         "open_app",
         "change_volume",
     ]
@@ -51,7 +57,12 @@ def test_read_file_roundtrip(tmp_path, monkeypatch):
     target.write_text("hi there", encoding="utf-8")
 
     rel = execute_tool("read_file", {"path": "sub/hello.txt"})
-    assert rel == {"path": str(target), "bytes": 8, "content": "hi there"}
+    assert rel == {
+        "path": str(target),
+        "bytes": 8,
+        "lines": 1,
+        "content": "hi there",
+    }
 
     absolute = execute_tool("read_file", {"path": str(target)})
     assert absolute["content"] == "hi there"
@@ -99,7 +110,9 @@ def test_search_files_finds_matches_relative_to_root(tmp_path, monkeypatch):
     (tmp_path / "other.py").write_text("x", encoding="utf-8")
 
     result = execute_tool("search_files", {"query": "test_"})
-    assert result["matches"] == [str(Path("sub") / "test_one.py")]
+    # Tool paths are always POSIX-style, on every platform, so what the model
+    # sees matches what the docs and tool descriptions use.
+    assert result["matches"] == ["sub/test_one.py"]
     assert result["truncated"] is False
     assert result["searched"] == "."
 
@@ -116,7 +129,7 @@ def test_search_files_is_case_insensitive_and_scopes_to_a_subfolder(
     assert len(everything["matches"]) == 2
 
     scoped = execute_tool("search_files", {"query": "report", "path": "sub"})
-    assert scoped["matches"] == [str(Path("sub") / "Report.PDF")]
+    assert scoped["matches"] == ["sub/Report.PDF"]
     assert scoped["searched"] == "sub"
 
 
